@@ -1,0 +1,36 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-oauth
+spec:
+  imageName: pg18-kc-validator:18.0
+  instances: 1
+
+  # Bootstrap from scratch and run our init SQL from a ConfigMap
+  bootstrap:
+    initdb:
+      database: appdb
+      owner: app
+      postInitApplicationSQLRefs:
+        configMapRefs:
+          - name: pg-init-sql
+            key: init.sql
+
+  storage:
+    size: 1Gi
+  postgresql:
+    parameters:
+      oauth_validator_libraries: "kc_validator"
+
+      kc.token_endpoint: "https://<keycloak>/realms/<realm>/protocol/openid-connect/token"
+      kc.audience:       "postgres-resource"
+      kc.resource_name:  "appdb"
+      kc.client_id:      "postgres-resource"
+      kc.http_timeout_ms: "2000"
+      kc.expected_issuer: "https://<keycloak>/realms/<realm>"
+      kc.debug: "on"
+      kc.log_body: "on"
+      log_min_messages: "debug1"
+
+    pg_hba:
+      - host all all 0.0.0.0/0 oauth issuer="https://<keycloak>/realms/<realm>" scope=db_access validator="kc_validator" delegate_ident_mapping=1
