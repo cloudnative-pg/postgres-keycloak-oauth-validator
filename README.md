@@ -2,6 +2,8 @@
 
 # PostgreSQL OAuth Validator for Keycloak
 
+**EXPERIMENTAL**
+
 **Requires**: PostgreSQL 18+
 
 This module enables PostgreSQL 18 to delegate authorization decisions to Keycloak using OAuth tokens, leveraging Keycloak Authorization Services for fine-grained, token-based access control.
