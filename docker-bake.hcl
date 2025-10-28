@@ -51,8 +51,8 @@ variable "revision" {
 
 suffix = (environment == "testing") ? "-testing" : ""
 
-title = "PostgreSQL Keycloak Validator Extension"
-description = ""
+title = "PostgreSQL OAuth validator module for Keycloak"
+description = "This module enables PostgreSQL to delegate authorization decisions to Keycloak using OAuth tokens, leveraging Keycloak Authorization Services for fine-grained, token-based access control."
 authors = "The CloudNativePG Contributors"
 url = "https://github.com/cloudnative-pg/"
 documentation = "https://cloudnative-pg.io/"
