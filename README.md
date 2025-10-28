@@ -116,6 +116,17 @@ The validator will request permission `<resource_name>#<scope>` (e.g., `appdb#ap
 
 ## Build Instructions
 
+### Local
+
+To compile the extension is required [meson](https://mesonbuild.com/) tool.
+
+```bash
+meson setup build
+meson compile -C build
+```
+The extension will be located inside the `build/` directory, that was
+created during the setup process.
+
 ### Docker
 
 ```bash
