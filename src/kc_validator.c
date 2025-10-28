@@ -66,20 +66,26 @@ static char *kc_expected_issuer = NULL;
 static bool  kc_debug           = false;
 static bool  kc_log_body        = false;
 
+/**
+ * @brief A growable buffer for storing libcurl response data.
+ */
 typedef struct
 {
-    char *data;
-    size_t len;
+    char *data; /**< Buffer data (palloc'd) */
+    size_t len; /**< Current length of data in buffer */
 } CurlBuf;
 
 /**
- * libcurl write callback: appends received chunk to a growable buffer.
+ * @brief libcurl write callback (CURLOPT_WRITEFUNCTION).
  *
- * @param contents Pointer to received data chunk.
- * @param sz       Chunk element size (libcurl-provided).
- * @param nm       Number of elements (libcurl-provided).
- * @param userp    Pointer to CurlBuf that accumulates the response.
- * @return         Number of bytes consumed, or 0 on allocation failure.
+ * Appends the received data chunk to the CurlBuf buffer, reallocating
+ * it as needed.
+ *
+ * @param contents Pointer to the received data chunk.
+ * @param sz       Size of one data element (usually 1 byte).
+ * @param nm       Number of data elements.
+ * @param userp    Pointer to the CurlBuf struct to append to.
+ * @return         Number of bytes consumed (sz * nm), or 0 on repalloc failure.
  */
 static size_t
 write_cb(void *contents, size_t sz, size_t nm, void *userp)
@@ -92,20 +98,25 @@ write_cb(void *contents, size_t sz, size_t nm, void *userp)
 
     p = (char *) repalloc(b->data, b->len + n + 1);
     if (!p)
-        return 0;
+        return 0; /* Signal error to libcurl */
 
     b->data = p;
     memcpy(b->data + b->len, contents, n);
     b->len += n;
-    b->data[b->len] = '\0';
+    b->data[b->len] = '\0'; /* Always NUL-terminate */
     return n;
 }
 
 /**
- * Minimal JSON check for: {"result": true}
+ * @brief Performs a minimal JSON check for the presence of {"result": true}.
  *
- * This avoids pulling a full JSON parser by scanning for the "result" key and
- * verifying the token "true" with basic delimiter checks.
+ * This function avoids linking a full JSON parser. It simply scans for the
+ * literal string "result", finds the ':', skips whitespace, and verifies
+ * the value is the literal string "true", followed by a valid delimiter
+ * (',', '}', whitespace, or end-of-string).
+ *
+ * @param json The JSON string (e.g., HTTP response body).
+ * @return true if '{"result": true}' is reliably detected, false otherwise.
  */
 static bool
 json_has_result_true(const char *json)
@@ -117,14 +128,16 @@ json_has_result_true(const char *json)
     if (!p) return false;
     p = strchr(p, ':'); if (!p) return false;
     p++;
-    while (*p && isspace((unsigned char)*p)) p++;
+    while (*p && isspace((unsigned char)*p)) p++; /* Skip whitespace */
     if (strncmp(p, "true", 4) != 0) return false;
     c = p[4];
+    /* Check for valid JSON delimiters after "true" */
     return (c == '\0' || c == ',' || c == '}' || isspace((unsigned char)c));
 }
 
 /**
- * Redact a string preserving only the last up to 4 characters.
+ * @brief Redacts a string, preserving only the last (up to) 4 characters.
+ *
  * Example: "abcdef" -> "**cdef"
  *
  * @param s       Input string (may be NULL).
@@ -141,22 +154,27 @@ redact_tail_buf(const char *s, char *buf, size_t buflen)
     size_t j;
     if (!s) return "<null>";
     len = strlen(s);
-    keep = (len > 4) ? 4 : len;
+    keep = (len > 4) ? 4 : len; /* Keep at most 4 chars */
     i = 0;
+    /* Fill with '*' */
     for (; i < len - keep && i < buflen - 1; i++) buf[i] = '*';
+    /* Append the kept tail */
     for (j = 0; j < keep && i < buflen - 1; j++, i++) buf[i] = s[len - keep + j];
     buf[i] = '\0';
     return buf;
 }
 
 /**
- * Decode a base64url string into a NUL-terminated byte buffer.
+ * @brief Decodes a base64url-encoded string into a NUL-terminated string.
  *
- * Replaces '-' with '+' and '_' with '/', adds necessary padding, then uses
- * PostgreSQL's base64 decoder. Caller must pfree() the returned buffer.
+ * This function converts base64url to standard base64 (replaces '-' with '+'
+ * and '_' with '/'), adds necessary '=' padding, and then uses PostgreSQL's
+ * built-in base64 decoder.
  *
- * @param in  Base64url-encoded input.
- * @return    palloc'd char* on success, NULL on failure.
+ * @param in  The base64url-encoded input string.
+ * @return    A palloc'd, NUL-terminated string on success.
+ * NULL on decoding failure.
+ * The caller is responsible for pfree'ing the returned string.
  */
 static char *
 base64url_decode_to_str(const char* in)
@@ -169,36 +187,49 @@ base64url_decode_to_str(const char* in)
     int n;
     len = strlen(in);
     tmp = pstrdup(in);
+
+    /* Convert base64url alphabet to standard base64 */
     for (size_t i = 0; i < len; i++) {
         if (tmp[i] == '-') tmp[i] = '+';
         else if (tmp[i] == '_') tmp[i] = '/';
     }
+
+    /* Add standard base64 padding */
     pad = (4 - (len % 4)) % 4;
     tmp = repalloc(tmp, len + pad + 1);
     for (int i = 0; i < pad; i++) tmp[len + i] = '=';
     tmp[len + pad] = '\0';
 
+    /* Decode using PostgreSQL's built-in function */
     outlen = pg_b64_dec_len(len + pad);
     out = palloc(outlen + 1);
     n = pg_b64_decode(tmp, (int)(len + pad), out, outlen);
     pfree(tmp);
-    if (n < 0) { pfree(out); return NULL; }
-    ((char*)out)[n] = '\0';
+    if (n < 0) {
+      pfree(out);
+      return NULL; /* Decode error */
+    }
+    ((char*)out)[n] = '\0'; /* NUL-terminate */
     return (char*)out;
 }
 
 /**
- * Verify "iss" claim in a JWT against kc_expected_issuer (if set).
+ * @brief Verifies the "iss" (issuer) claim in a JWT against the
+ * kc_expected_issuer GUC.
  *
- * This function decodes only the JWT payload (base64url), then performs a
- * minimal string scan to extract the "iss" field without full JSON parsing.
+ * This function performs *no* signature validation. It only decodes the
+ * base64url payload (the second part of the JWT) and performs a minimal
+ * string scan to extract the "iss" field, avoiding a full JSON parse.
  *
- * @param token  JWT string (header.payload.signature).
- * @return       true if issuer matches or check is disabled; false on mismatch.
+ * @param token  The raw JWT string (header.payload.signature).
+ * @return       true if the issuer matches kc_expected_issuer,
+ * or if kc_expected_issuer is not set (check disabled).
+ * false on mismatch or if the "iss" claim cannot be parsed.
  */
 static bool
 issuer_ok(const char *token)
 {
+    /* If GUC is not set, skip the check */
     if (!kc_expected_issuer) {
         if (kc_debug) elog(DEBUG1, "kc: issuer_ok: expected_issuer not set -> skip");
         return true;
@@ -215,28 +246,33 @@ issuer_ok(const char *token)
     bool ok;
     if (!token || !*token) return false;
 
+    /* Find the first dot (after header) */
     dot1 = strchr(token, '.');
     if (!dot1) return false;
+    /* Find the second dot (after payload) */
     dot2 = strchr(dot1 + 1, '.');
     if (!dot2) return false;
 
+    /* Extract the base64url payload string */
     payload_len = (size_t)(dot2 - (dot1 + 1));
     payload_b64 = pnstrdup(dot1 + 1, payload_len);
     payload_json = base64url_decode_to_str(payload_b64);
     pfree(payload_b64);
     if (!payload_json) return false;
 
+    /* Minimal JSON parse: find '"iss"':"value" */
     k = strstr(payload_json, "\"iss\"");
     if (!k) { pfree(payload_json); return false; }
     k = strchr(k, ':'); if (!k) { pfree(payload_json); return false; }
     k++;
-    while (*k && isspace((unsigned char)*k)) k++;
-    if (*k != '\"') { pfree(payload_json); return false; }
+    while (*k && isspace((unsigned char)*k)) k++; /* Skip whitespace */
+    if (*k != '\"') { pfree(payload_json); return false; } /* Must be a string */
     k++;
     start = k;
-    while (*k && *k != '\"') k++;
+    while (*k && *k != '\"') k++; /* Find end quote */
     iss_len = (size_t)(k - start);
 
+    /* Compare the extracted issuer with the expected one */
     ok = (iss_len == strlen(kc_expected_issuer) &&
                strncmp(start, kc_expected_issuer, iss_len) == 0);
 
@@ -247,11 +283,13 @@ issuer_ok(const char *token)
 }
 
 /**
- * Helper to append a header line to a curl_slist.
+ * @brief Appends a formatted header string to a curl_slist.
  *
- * @param hdr   Pointer to current header list.
- * @param line  Header line string (e.g., "Accept: application/json").
- * @return      true on success, false on append failure.
+ * This is a simple wrapper around curl_slist_append to simplify error checking.
+ *
+ * @param hdr    Pointer to the curl_slist* (will be updated on success).
+ * @param line   Header line string (e.g., "Accept: application/json").
+ * @return       true on success, false on append failure.
  */
 static inline bool add_hdr(struct curl_slist **hdr, const char *line)
 {
@@ -262,27 +300,32 @@ static inline bool add_hdr(struct curl_slist **hdr, const char *line)
 }
 
 /**
- * Perform a Keycloak UMA ticket decision request.
+ * @brief Performs a Keycloak UMA ticket decision request.
  *
- * Builds an x-www-form-urlencoded POST with:
- *   grant_type=urn:ietf:params:oauth:grant-type:uma-ticket
- *   audience=<kc_audience>
- *   permission=<resource>#<scope>
- *   response_mode=decision
- *   client_id=<kc_client_id>
- *   Authorization: Bearer <user_token>
+ * This function builds an x-www-form-urlencoded POST request to the
+ * Keycloak token endpoint (`kc.token_endpoint`) with the following
+ * UMA-specific parameters:
  *
- * @param curl        Initialized CURL* handle (easy interface).
- * @param permission  Permission string "<resource>#<scope>".
- * @param user_token  End-user token.
- * @return            true if HTTP 200 and body contains {"result": true}.
+ * grant_type=urn:ietf:params:oauth:grant-type:uma-ticket
+ * audience=<kc_audience>
+ * permission=<resource>#<scope>
+ * response_mode=decision
+ * client_id=<kc_client_id>
+ * Authorization: Bearer <user_token>
+ *
+ * @param curl         Initialized CURL* handle (easy interface).
+ * @param permission   The permission string, formatted as "<resource>#<scope>".
+ * @param user_token   The end-user's access token (JWT).
+ * @return             true if the HTTP response is 200 OK and the body
+ * contains {"result": true}, false otherwise.
  *
  * Timeouts:
- *  - CURLOPT_TIMEOUT_MS = kc_http_timeout_ms
- *  - CURLOPT_CONNECTTIMEOUT_MS = kc_http_timeout_ms / 2 (min 100ms)
+ * - CURLOPT_TIMEOUT_MS = kc_http_timeout_ms
+ * - CURLOPT_CONNECTTIMEOUT_MS = kc_http_timeout_ms / 2 (min 100ms)
  *
  * TLS:
- *  - Peer and host verification enabled.
+ * - Peer and host verification are enabled (CURLOPT_SSL_VERIFYPEER,
+ * CURLOPT_SSL_VERIFYHOST).
  */
 static bool
 kc_decision(CURL *curl, const char *permission, const char *user_token)
@@ -301,6 +344,7 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
     char *post;
     long connect_tmo;
 
+    /* Initialize response buffer (must be pfree'd) */
     buf.data = palloc0(1);
     buf.len  = 0;
     hdr = NULL;
@@ -309,6 +353,7 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
     http_code = 0;
     total_time = 0.0;
 
+    /* Check that all required GUC parameters are set */
     if (!kc_token_endpoint || !kc_audience || !permission ||
         !kc_client_id)
     {
@@ -323,6 +368,7 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
         return false;
     }
 
+    /* Build HTTP headers */
     hdr = NULL;
     if (!add_hdr(&hdr, "Content-Type: application/x-www-form-urlencoded")) goto err;
     if (!add_hdr(&hdr, "Accept: application/json")) goto err;
@@ -334,6 +380,7 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
         if (!added) goto err;
     }
 
+    /* URL-encode POST body components */
     aud = curl_easy_escape(curl, kc_audience, 0);
     perm_enc = curl_easy_escape(curl, permission, 0);
     cid = curl_easy_escape(curl, kc_client_id, 0);
@@ -346,6 +393,7 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
         return false;
     }
 
+    /* Build the POST body */
     post = psprintf(
         "grant_type=urn:ietf:params:oauth:grant-type:uma-ticket"
         "&audience=%s&permission=%s&response_mode=decision&client_id=%s",
@@ -365,32 +413,57 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
              redact_tail_buf(kc_client_id, cid_red, sizeof(cid_red)));
     }
 
+    /* Calculate connect timeout: half of total, but at least 100ms */
     connect_tmo = tmo / 2;
     if (connect_tmo < 100) connect_tmo = 100;
 
+    /* --- Configure libcurl options --- */
     curl_easy_setopt(curl, CURLOPT_URL, kc_token_endpoint);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdr);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) strlen(post));
+
+    /* Set connection and total timeouts */
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, tmo);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, connect_tmo);
+
+    /* Disable signals (important for timeouts in multi-threaded/signal-heavy apps) */
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf); /* Capture error details */
+
+    /* Set up response buffer callback */
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *) &buf);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "kc_validator/1.0");
+
+    /* Enforce TLS certificate and hostname verification */
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+    /* Fail hard on HTTP 4xx/5xx responses (e.g., 401, 403, 500) */
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 512L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 3L);
+
+    /* Protect against very slow/stalled connections */
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 512L); /* 512 bytes/sec */
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 3L); /* must maintain for 3s */
+    /* --- End of libcurl options --- */
 
     rc = curl_easy_perform(curl);
 
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_getinfo(curl, CURLINFO_TOTAL_TIME, &total_time);
 
+    /*
+     * Success is defined as:
+     * 1. libcurl request completed (rc == CURLE_OK)
+     * 2. HTTP status code was 200
+     * 3. Response body contained {"result": true}
+     *
+     * Note: CURLOPT_FAILONERROR handles 4xx/5xx, so we only expect 200 here
+     * on a successful (CURLE_OK) request.
+     */
     if (rc == CURLE_OK && http_code == 200) {
         ok = json_has_result_true(buf.data);
     } else {
@@ -404,7 +477,7 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
              (int) rc, curl_easy_strerror(rc), errbuf[0] ? errbuf : "(no detail)");
 
         if (kc_log_body && buf.data) {
-            int max = 2048;
+            int max = 2048; /* Truncate long bodies in logs */
             int len = (int) strlen(buf.data);
             elog(DEBUG1, "kc: response body: %.*s%s",
                  (len > max ? max : len), buf.data,
@@ -412,27 +485,33 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
         }
     }
 
+    /* Cleanup */
     if (post) pfree(post);
     if (buf.data) pfree(buf.data);
     if (hdr) curl_slist_free_all(hdr);
 
     return ok;
 
-err:
+err: /* Error path for setup failures (e.g., add_hdr, curl_easy_escape) */
+    if (kc_debug) elog(DEBUG1, "kc: decision setup failed (e.g., header append)");
+    if (post) pfree(post); /* post might not be set, but pfree(NULL) is safe */
     if (buf.data) pfree(buf.data);
     if (hdr) curl_slist_free_all(hdr);
     return false;
 }
 
 /**
- * Extract a string claim value from a JWT payload by key.
+ * @brief Extracts a string claim value from a JWT payload by its key.
  *
- * Minimal parser that looks for key as a quoted string ("key") and then reads
- * a quoted value immediately following the colon.
+ * This function performs *no* signature validation. It decodes the
+ * base64url payload and performs a minimal string scan to find the key
+ * (e.g., "sub") and extract the subsequent quoted string value.
  *
- * @param token  JWT string.
- * @param key    JSON claim name (e.g., "sub").
- * @return       palloc'd string with claim value, or NULL on parse failure.
+ * @param token  The raw JWT string (header.payload.signature).
+ * @param key    The JSON claim name to extract (e.g., "sub").
+ * @return       A palloc'd string containing the claim value,
+ * or NULL if the token/key is invalid or the claim is not found.
+ * The caller is responsible for pfree'ing the returned string.
  */
 static char *
 jwt_get_claim_string(const char *token, const char *key)
@@ -449,6 +528,7 @@ jwt_get_claim_string(const char *token, const char *key)
     char *val;
     if (!token || !*token || !key) return NULL;
 
+    /* Find payload (part between dots) */
     dot1 = strchr(token, '.');
     if (!dot1) return NULL;
     dot2 = strchr(dot1 + 1, '.');
@@ -460,18 +540,22 @@ jwt_get_claim_string(const char *token, const char *key)
     pfree(payload_b64);
     if (!payload_json) return NULL;
 
+    /* Build search pattern: "key" */
     snprintf(pat, sizeof(pat), "\"%s\"", key);
     k = strstr(payload_json, pat);
     if (!k) { pfree(payload_json); return NULL; }
+
+    /* Find value: :"value" */
     k = strchr(k, ':'); if (!k) { pfree(payload_json); return NULL; }
     k++;
-    while (*k && isspace((unsigned char)*k)) k++;
-    if (*k != '\"') { pfree(payload_json); return NULL; }
+    while (*k && isspace((unsigned char)*k)) k++; /* Skip whitespace */
+    if (*k != '\"') { pfree(payload_json); return NULL; } /* Must be string */
     k++;
     start = k;
-    while (*k && *k != '\"') k++;
+    while (*k && *k != '\"') k++; /* Find end quote */
     vlen = (size_t)(k - start);
 
+    /* Allocate and copy the value */
     val = (char *) palloc(vlen + 1);
     memcpy(val, start, vlen);
     val[vlen] = '\0';
@@ -480,21 +564,27 @@ jwt_get_claim_string(const char *token, const char *key)
 }
 
 /**
- * Main validator callback: authenticate/authorize a token for a scope.
+ * @brief Main validator callback: authenticates and authorizes a token for a scope.
+ *
+ * This function is the core implementation of the OAuthValidatorCallbacks.
  * The 'role' parameter in code corresponds to Keycloak 'scope'.
  *
  * Steps:
- *  1) Fast returns if token/role/resource_name are missing.
- *  2) Optional issuer verification via kc.expected_issuer.
- *  3) Extract subject ("sub") as authn_id for auditing.
- *  4) Compute permission "<resource>#<scope>" and call kc_decision().
- *  5) Set res->authorized based on Keycloak decision.
+ * 1) Fast-fail if token, role, or resource_name GUC are missing.
+ * 2) (Optional) Verify the token's "iss" claim against `kc.expected_issuer`.
+ * 3) Extract the "sub" (subject) claim as the `authn_id` for auditing.
+ * 4) Compute the permission string as "<kc.resource_name>#<role>".
+ * 5) Call kc_decision() to get the authorization decision from Keycloak.
+ * 6) Set `res->authorized` based on the Keycloak decision.
  *
  * @param state  Unused module state (reserved for future).
- * @param token  End-user token.
- * @param role   Logical role to check, paired with kc_resource_name.
- * @param res    Output: authorized flag and authn_id ("sub").
- * @return       true to indicate the check completed (errors handled internally).
+ * @param token  The end-user's access token (JWT).
+ * @param role   The logical role (Keycloak 'scope') to check.
+ * @param res    Output struct to be populated:
+ * - res->authorized is set to true on success.
+ * - res->authn_id is set to the palloc'd "sub" claim.
+ * @return       Always returns true to indicate the check was handled by this
+ * module. The *actual* authorization decision is in res->authorized.
  */
 static bool
 validate_token(const ValidatorModuleState *state,
@@ -505,8 +595,9 @@ validate_token(const ValidatorModuleState *state,
     CURL *curl;
     bool decision;
 
-    (void) state;
+    (void) state; /* Unused */
 
+    /* Default to unauthorized */
     res->authorized = false;
     res->authn_id   = NULL;
 
@@ -516,36 +607,43 @@ validate_token(const ValidatorModuleState *state,
              role ? role : "(NULL)",
              kc_resource_name ? kc_resource_name : "(NULL)");
 
+    /* If any required param is missing, we must deny */
     if (!token || !role || !kc_resource_name)
     {
         if (kc_debug)
             elog(DEBUG1, "kc: early return: missing one of (token, role, resource_name)");
-        return true;
+        return true; /* Handled (by denying) */
     }
 
+    /* 1. (Optional) Issuer Check */
     if (!issuer_ok(token))
     {
         if (kc_debug)
             elog(DEBUG1, "kc: issuer check failed -> deny");
-        return true;
+        return true; /* Handled (by denying) */
     }
+
+    /* 2. Extract subject for audit/logging (authn_id) */
     res->authn_id   = jwt_get_claim_string(token, "sub");
 
+    /* 3. Initialize libcurl */
     curl = curl_easy_init();
     if (!curl)
     {
         if (kc_debug)
             elog(DEBUG1, "kc: curl_easy_init failed");
-        return true;
+        return true; /* Handled (by denying) */
     }
     perm = psprintf("%s#%s", kc_resource_name, role);
 
     if (kc_debug)
         elog(DEBUG1, "kc: calling kc_decision with perm=\"%s\"", perm);
 
+    /* 5. Perform the UMA decision request */
     decision = kc_decision(curl, perm, token);
     curl_easy_cleanup(curl);
 
+    /* 6. Set final result */
     if (decision)
     {
         res->authorized = true;
@@ -554,23 +652,32 @@ validate_token(const ValidatorModuleState *state,
     }
     else
     {
+        /* res->authorized is already false */
         if (kc_debug)
             elog(DEBUG1, "kc: authorization = FALSE for perm=\"%s\"", perm);
     }
 
     if (perm) pfree(perm);
 
+
+    /*
+     * We return true to tell the caller that we *handled* the validation.
+     * The actual outcome is in res->authorized.
+     */
     return true;
 }
 
 /**
- * Initialize libcurl globals on startup.
+ * @brief Module startup callback (from OAuthValidatorCallbacks).
+ *
+ * Initializes libcurl globals. This is called once when the
+ * PostgreSQL backend starts.
  */
 static void
 validator_startup(ValidatorModuleState *s)
 {
     const char *ver;
-    (void) s;
+    (void) s; /* Unused */
     curl_global_init(CURL_GLOBAL_DEFAULT);
     ver = curl_version();
     if (kc_debug)
@@ -578,21 +685,24 @@ validator_startup(ValidatorModuleState *s)
 }
 
 /**
- * Cleanup libcurl globals on shutdown.
+ * @brief Module shutdown callback (from OAuthValidatorCallbacks).
+ *
+ * Cleans up libcurl globals. This is called once when the
+ * PostgreSQL backend shuts down.
  */
 static void
 validator_shutdown(ValidatorModuleState *s)
 {
-    (void) s;
+    (void) s; /* Unused */
     curl_global_cleanup();
     if (kc_debug)
         elog(DEBUG1, "kc: validator_shutdown");
 }
 
 /**
- * Register OAuth validator callbacks for PostgreSQL.
+ * @brief Static structure defining the callbacks for this validator module.
  *
- * Returns a pointer to the static callbacks structure recognized by libpq/oauth.h.
+ * This structure is passed back to PostgreSQL's OAuth framework.
  */
 static const OAuthValidatorCallbacks KC = {
     .magic       = PG_OAUTH_VALIDATOR_MAGIC,
@@ -601,7 +711,14 @@ static const OAuthValidatorCallbacks KC = {
     .validate_cb = validate_token,
 };
 
-/* Entry point returning the callbacks for PostgreSQL */
+/**
+ * @brief PostgreSQL hook function (magic block).
+ *
+ * Called by the OAuth framework (libpq/oauth.h) to retrieve this
+ * module's implementation of the validator callbacks.
+ *
+ * @return A const pointer to the static OAuthValidatorCallbacks struct.
+ */
 const OAuthValidatorCallbacks *
 _PG_oauth_validator_module_init(void)
 {
@@ -609,8 +726,14 @@ _PG_oauth_validator_module_init(void)
 }
 
 /**
- * PostgreSQL module initialization: defines all GUC variables and reserves
- * "kc" prefix to avoid conflicts. All GUCs are reloadable at SIGHUP.
+ * @brief PostgreSQL module initialization function.
+ *
+ * This function is called when the module is loaded. It defines all the
+ * GUC (Grand Unified Configuration) variables for this module and
+ * reserves the "kc" prefix to avoid conflicts.
+ *
+ * All GUCs are marked with PGC_SIGHUP, meaning they can be reloaded
+ * by sending a SIGHUP signal to the postmaster.
  */
 void
 _PG_init(void)
@@ -647,5 +770,6 @@ _PG_init(void)
         "Log HTTP response body (may contain sensitive info)", NULL,
         &kc_log_body, false, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
+    /* Reserve the "kc." prefix to prevent conflicts */
     MarkGUCPrefixReserved("kc");
 }
