@@ -18,4 +18,4 @@ RUN meson setup build && meson compile -C build/
 
 FROM scratch
 
-COPY --from=builder /srv/build/kc_validator.so /share/extension/
+COPY --from=builder /srv/build/kc_validator.so /lib
