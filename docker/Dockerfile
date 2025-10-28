@@ -18,4 +18,5 @@ RUN meson setup build && meson compile -C build/
 
 FROM scratch
 
+COPY --from=builder /srv/LICENSE ./
 COPY --from=builder /srv/build/kc_validator.so /lib
