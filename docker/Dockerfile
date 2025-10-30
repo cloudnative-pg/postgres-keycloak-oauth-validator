@@ -20,3 +20,10 @@ FROM scratch
 
 COPY --from=builder /srv/LICENSE ./
 COPY --from=builder /srv/build/kc_validator.so /lib/
+COPY --from=builder /usr/lib/*linux-gnu/libcurl* /system/
+COPY --from=builder /usr/lib/*linux-gnu/libnghttp3* /system/
+COPY --from=builder /usr/lib/*linux-gnu/libnghttp2* /system/
+COPY --from=builder /usr/lib/*linux-gnu/librtmp* /system/
+COPY --from=builder /usr/lib/*linux-gnu/libssh2* /system/
+COPY --from=builder /usr/lib/*linux-gnu/libpsl* /system/
+COPY --from=builder /usr/lib/*linux-gnu/libbrot* /system/
