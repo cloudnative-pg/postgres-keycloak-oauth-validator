@@ -37,10 +37,6 @@ variable "latest" {
   default = "false"
 }
 
-variable "tag" {
-  default = "dev"
-}
-
 variable "buildVersion" {
   default = "dev"
 }
@@ -49,39 +45,51 @@ variable "revision" {
   default = ""
 }
 
-suffix = (environment == "testing") ? "-testing" : ""
+variable "distributions" {
+  default = [
+    "trixie"
+  ]
+}
+
+variable "pgVersions" {
+  default = [
+    "18"
+  ]
+}
+
+fullname = ( environment == "testing") ? "${registry}/postgres-keycloak-oauth-validator-testing" : "${registry}/postgres-keycloak-oauth-validator"
 
 title = "PostgreSQL OAuth validator module for Keycloak"
 description = "This module enables PostgreSQL to delegate authorization decisions to Keycloak using OAuth tokens, leveraging Keycloak Authorization Services for fine-grained, token-based access control."
 authors = "The CloudNativePG Contributors"
-url = "https://github.com/cloudnative-pg/"
+url = "https://github.com/cloudnative-pg/postgres-keycloak-oauth-validator"
 documentation = "https://cloudnative-pg.io/"
 license = "Apache-2.0"
 now = timestamp()
 
-
-# renovate: datasource=docker
-baseImage = "ghcr.io/cloudnative-pg/postgresql:18-standard-trixie"
-
 target "default" {
   matrix = {
-    distro = [
-      "base",
-    ]
+    pgVersion = pgVersions
+    distro = distributions
   }
 
-  name = "${distro}"
-  platforms = ["linux/amd64", "linux/arm64"]
+  name = "${pgVersion}-${distro}"
+  platforms = [
+    "linux/amd64",
+    "linux/arm64"
+  ]
   tags = [
-    "${registry}/postgres-keycloak-oauth-validator${suffix}:${tag}",
-    latest("${registry}/postgres-keycloak-oauth-validator${suffix}", "${latest}"),
+    "${fullname}:${pgVersion}-${buildVersion}-${distro}",
+    "${fullname}:${pgVersion}-${buildVersion}-${formatdate("YYYYMMDDhhmm", now)}-${distro}",
+    latest("${fullname}", "${latest}"),
   ]
 
   dockerfile = "docker/Dockerfile"
   context    = "."
 
   args = {
-    BASE = "${baseImage}"
+    BASE = "${getBaseImage(distro, pgVersion)}"
+    PG_MAJOR = pgVersion
   }
 
   output = [
@@ -104,8 +112,7 @@ target "default" {
     "index,manifest:org.opencontainers.image.documentation=${documentation}",
     "index,manifest:org.opencontainers.image.authors=${authors}",
     "index,manifest:org.opencontainers.image.licenses=${license}",
-    "index,manifest:org.opencontainers.image.base.name=",
-    "index,manifest:org.opencontainers.image.base.digest=",
+    "index,manifest:org.opencontainers.image.base.name=${getBaseImage(distro, pgVersion)}",
   ]
   labels = {
     "org.opencontainers.image.created"       = "${now}",
@@ -119,8 +126,7 @@ target "default" {
     "org.opencontainers.image.documentation" = "${documentation}",
     "org.opencontainers.image.authors"       = "${authors}",
     "org.opencontainers.image.licenses"      = "${license}",
-    "org.opencontainers.image.base.name"     = "",
-    "org.opencontainers.image.base.digest"   = "",
+    "org.opencontainers.image.base.name"     = "${getBaseImage(distro, pgVersion)}",
     "name"                                   = "${title}",
     "maintainer"                             = "${authors}",
     "vendor"                                 = "${authors}",
@@ -134,4 +140,9 @@ target "default" {
 function latest {
   params = [ image, latest ]
   result = (latest == "true") ? "${image}:latest" : ""
+}
+
+function getBaseImage {
+  params = [ distro, pgVersion ]
+  result = format("ghcr.io/cloudnative-pg/postgresql:%s-minimal-%s", pgVersion, distro)
 }
