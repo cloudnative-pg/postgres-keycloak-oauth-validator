@@ -131,8 +131,18 @@ created during the setup process.
 
 ### Docker
 
+A simple possibility is to build the image using a plain docker build
+command:
+
 ```bash
 docker build -t pg-kc-validator -f docker/Dockerfile .
+```
+
+To have all the possible labels, annotations, SBOMS, etc. the
+image can be built using Docker Bake:
+
+```bash
+docker buildx bake
 ```
 
 ---
