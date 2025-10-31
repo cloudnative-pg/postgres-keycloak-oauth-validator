@@ -338,10 +338,10 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
     char errbuf[CURL_ERROR_SIZE] = {0};
     long http_code;
     double total_time;
-    char *aud;
-    char *perm_enc;
-    char *cid;
-    char *post;
+    char *aud = NULL;
+    char *perm_enc = NULL;
+    char *cid = NULL;
+    char *post = NULL;
     long connect_tmo;
 
     /* Initialize response buffer (must be pfree'd) */
