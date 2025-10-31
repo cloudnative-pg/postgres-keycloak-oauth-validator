@@ -35,10 +35,16 @@ kind: Cluster
 metadata:
   name: pg-oauth
 spec:
-  imageName: pg18-kc-validator:18.0      # Image containing kc_validator.so
+  imageName: ghcr.io/cloudnative-pg/postgresql:18-minimal-trixie
   instances: 1
 
   postgresql:
+    extensions:
+      - name: keycloak-oauth-validator
+        ld_library_path:
+          - system
+        image:
+          reference: ghcr.io/cloudnative-pg/postgres-keycloak-oauth-validator-testing:18-dev-trixie
     parameters:
       oauth_validator_libraries: "kc_validator"
       kc.token_endpoint: "https://<keycloak>/realms/<realm>/protocol/openid-connect/token"
@@ -131,8 +137,18 @@ created during the setup process.
 
 ### Docker
 
+A simple possibility is to build the image using a plain docker build
+command:
+
 ```bash
 docker build -t pg-kc-validator -f docker/Dockerfile .
+```
+
+To have all the possible labels, annotations, SBOMS, etc. the
+image can be built using Docker Bake:
+
+```bash
+docker buildx bake
 ```
 
 ---
