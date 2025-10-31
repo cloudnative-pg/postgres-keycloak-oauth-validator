@@ -1,0 +1,237 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-db
+spec:
+  instances: 3
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+  storage:
+    size: 1Gi
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: keycloak-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-certificate
+spec:
+  dnsNames:
+    - keycloak-app-service
+    - keycloak-app-service.svc.cluster.local
+    - keycloak-app
+  subject:
+    countries:
+      - IT
+    localities:
+      - Prato
+    organizations:
+      - cert-manager
+  duration: 2160h0m0s
+  issuerRef:
+    kind: ClusterIssuer
+    name: keycloak-issuer
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS1
+    rotationPolicy: Always
+  secretName: keycloak-certificate
+---
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak-app
+spec:
+  instances: 1
+  db:
+    vendor: postgres
+    host: keycloak-db-rw
+    usernameSecret:
+      name: keycloak-db-app
+      key: username
+    passwordSecret:
+      name: keycloak-db-app
+      key: password
+  additionalOptions:
+    - name: log-console-output
+      value: json
+    - name: metrics-enabled
+      value: 'true'
+  http:
+    tlsSecret: keycloak-certificate
+  hostname:
+    strict: false
+  proxy:
+    headers: xforwarded # double check your reverse proxy sets and overwrites the X-Forwarded-* headers
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: keycloak
+    app.kubernetes.io/instance: keycloak-app
+    app.kubernetes.io/managed-by: keycloak-operator
+  name: keycloak-app
+spec:
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    app: keycloak
+    app.kubernetes.io/instance: keycloak-app
+    app.kubernetes.io/managed-by: keycloak-operator
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-init-sql
+data:
+  init.sql: |
+    -- Create the 'users' table
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username VARCHAR(50) NOT NULL UNIQUE,
+      email VARCHAR(100) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Create the 'orders' table
+    CREATE TABLE IF NOT EXISTS orders (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id),
+      product VARCHAR(100),
+      amount INTEGER,
+      ordered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Insert sample users
+    INSERT INTO users (username, email) VALUES
+      ('alice', 'alice@example.com'),
+      ('bob', 'bob@example.com');
+
+    -- Insert sample orders
+    INSERT INTO orders (user_id, product, amount) VALUES
+      (1, 'Widget', 3),
+      (2, 'Gadget', 5);
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_readonly') THEN
+        CREATE ROLE app_readonly LOGIN;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_readwrite') THEN
+        CREATE ROLE app_readwrite LOGIN;
+      END IF;
+    END$$;
+
+    REVOKE CONNECT ON DATABASE appdb FROM PUBLIC;
+    GRANT  CONNECT ON DATABASE appdb TO app_readonly, app_readwrite;
+
+    REVOKE ALL ON SCHEMA public FROM PUBLIC;
+    GRANT  USAGE ON SCHEMA public TO app_readonly, app_readwrite;
+    GRANT  CREATE ON SCHEMA public TO app_readwrite;
+
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readonly;
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readwrite;
+    GRANT INSERT ON ALL TABLES IN SCHEMA public TO app_readwrite;
+
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_readonly;
+    GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO app_readwrite;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT ON TABLES TO app_readonly;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT USAGE, SELECT ON SEQUENCES TO app_readonly;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT, INSERT ON TABLES TO app_readwrite;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO app_readwrite;
+
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-oauth
+  annotations:
+    cnpg.io/validation: disabled
+spec:
+#  imageName:
+  instances: 1
+  #logLevel: debug
+
+  env:
+  - name: "PGOAUTHDEBUG"
+    value: "UNSAFE"
+  - name: "SSL_CERT_DIR"
+    value: "/projected/certificate/"
+  - name: "CURL_CA_BUNDLE"
+    value: "/projected/certificate/ca.crt"
+  - name: "PGOAUTHCAFILE"
+    value: "/projected/certificate/ca.crt"
+  # Bootstrap from scratch and run our init SQL from a ConfigMap
+  bootstrap:
+    initdb:
+      database: appdb
+      owner: app
+      postInitApplicationSQLRefs:
+        configMapRefs:
+          - name: pg-init-sql
+            key: init.sql
+
+  projectedVolumeTemplate:
+    sources:
+      - secret:
+          name: keycloak-certificate
+          items:
+            - key: ca.crt
+              path: certificate/ca.crt
+            - key: tls.crt
+              path: certificate/tls.crt
+
+  managed:
+    roles:
+      - name: app_readonly
+        ensure: present
+        comment: readonly user
+        login: true
+      - name: app_readwrite
+        ensure: present
+        comment: readwrite user
+        login: true
+
+  storage:
+    size: 1Gi
+  postgresql:
+    extensions:
+    - name: kc-validator
+      image:
+        reference: ghcr.io/cloudnative-pg/postgres-keycloak-oauth-validator-testing:dev
+        pullPolicy: Always
+      ld_library_path:
+        - system
+    parameters:
+      oauth_validator_libraries: "kc_validator"
+
+      kc.token_endpoint: "https://keycloak-app-service:8443/realms/demo/protocol/openid-connect/token"
+      kc.audience:       "postgres-resource"
+      kc.resource_name:  "appdb"
+      kc.client_id:      "postgres-resource"
+      kc.http_timeout_ms: "2000"
+      #kc.expected_issuer: "https://keycloak-app/realms/demo"
+      kc.debug: "true"
+      kc.log_body: "on"
+      log_min_messages: "debug1"
+
+    pg_hba:
+      - host all all 0.0.0.0/0 oauth issuer="https://keycloak-app-service:8443/realms/demo" scope=db_access validator="kc_validator" delegate_ident_mapping=1
