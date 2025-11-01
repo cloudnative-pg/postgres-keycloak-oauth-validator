@@ -65,6 +65,7 @@ static int   kc_http_timeout_ms = 2000;
 static char *kc_expected_issuer = NULL;
 static bool  kc_debug           = false;
 static bool  kc_log_body        = false;
+static bool  kc_insecure = false;
 
 /**
  * @brief A growable buffer for storing libcurl response data.
@@ -437,8 +438,8 @@ kc_decision(CURL *curl, const char *permission, const char *user_token)
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "kc_validator/1.0");
 
     /* Enforce TLS certificate and hostname verification */
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, kc_insecure ? 1L : 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, kc_insecure ? 2L : 0L);
 
     /* Fail hard on HTTP 4xx/5xx responses (e.g., 401, 403, 500) */
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
@@ -769,6 +770,10 @@ _PG_init(void)
     DefineCustomBoolVariable("kc.log_body",
         "Log HTTP response body (may contain sensitive info)", NULL,
         &kc_log_body, false, PGC_SIGHUP, 0, NULL, NULL, NULL);
+
+    DefineCustomBoolVariable( "kc.insecure",
+        "Allow insecure certificates, such as, self-signed certificate. Must be used with caution.", NULL,
+        &kc_insecure, false, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
     /* Reserve the "kc." prefix to prevent conflicts */
     MarkGUCPrefixReserved("kc");
