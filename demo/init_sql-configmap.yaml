@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-init-sql
+data:
+  init.sql: |
+    -- Create the 'users' table
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username VARCHAR(50) NOT NULL UNIQUE,
+      email VARCHAR(100) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Create the 'orders' table
+    CREATE TABLE IF NOT EXISTS orders (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id),
+      product VARCHAR(100),
+      amount INTEGER,
+      ordered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Insert sample users
+    INSERT INTO users (username, email) VALUES
+      ('alice', 'alice@example.com'),
+      ('bob', 'bob@example.com');
+
+    -- Insert sample orders
+    INSERT INTO orders (user_id, product, amount) VALUES
+      (1, 'Widget', 3),
+      (2, 'Gadget', 5);
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_readonly') THEN
+        CREATE ROLE app_readonly LOGIN;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_readwrite') THEN
+        CREATE ROLE app_readwrite LOGIN;
+      END IF;
+    END$$;
+
+    REVOKE CONNECT ON DATABASE appdb FROM PUBLIC;
+    GRANT  CONNECT ON DATABASE appdb TO app_readonly, app_readwrite;
+
+    REVOKE ALL ON SCHEMA public FROM PUBLIC;
+    GRANT  USAGE ON SCHEMA public TO app_readonly, app_readwrite;
+    GRANT  CREATE ON SCHEMA public TO app_readwrite;
+
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readonly;
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readwrite;
+    GRANT INSERT ON ALL TABLES IN SCHEMA public TO app_readwrite;
+
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_readonly;
+    GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO app_readwrite;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT ON TABLES TO app_readonly;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT USAGE, SELECT ON SEQUENCES TO app_readonly;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT, INSERT ON TABLES TO app_readwrite;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO app_readwrite;

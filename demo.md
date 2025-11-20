@@ -1,23 +1,20 @@
-# Pilot demostration instructions 
+# Pilot Demonstration Instructions
 
 ## Required Tools
 
-The following tools are required to perform the following demo:
+The following tools are required to perform this demo:
 
 * [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
 * [KinD](https://kind.sigs.k8s.io/)
 
-## How to follow the instructions
+## How to follow these instructions
 
-All the content of the files will be added step by step with an explanation of how they should
-be used, they can be put in a file per example or in a long file separated by `---`, the
-recommended way will be one per file, and at the end there will be one file to download and
-cannot be posted since it's too long
+All the content of the YAML files will be displayed in each step, and can be applied with the related
+`kubectl` command, except for the KinD configuration. The `kubectl` commands should be executed in
+the same namespace. For simplicity, this demo uses the `default` namespace in the following instructions.
+You will find the same YAML files inside the `demo/` directory for inspection and/or to use them.
 
-The `kubectl` command all should be executed in the same namespace, by simplicity, we use the
-`default` one which is the default after we create the KinD cluster.
-
-## Setting up the KinD cluster
+## Set up the local kubernetes cluster
 
 The demonstration can only be performed on Kubernetes 1.33.x or above, this due
 to the ImageVolume feature that is required to mount the extension/module images
@@ -25,7 +22,8 @@ inside the pods.
 
 ### KinD configuration
 
-Save the following configuration file as [kind-config.yaml](./kind-config.yaml) to set up your cluster:
+The [kind-config.yaml](./demo/kind-config.yaml) file serves as the configuration to set up the local Kubernetes
+cluster with the required feature to run this demo.
 
 ```yaml
 kind: Cluster
@@ -37,15 +35,17 @@ featureGates:
   "ImageVolume": true
 ```
 
-Now create the cluster with the following command:
+### Start KinD
+
+Create the cluster with the following command:
 
 ```bash
-kind  create cluster --name pg-imagevolume --config=kind-config.yaml
+kind  create cluster --name pg-imagevolume --config=./demo/kind-config.yaml
 ```
 
-### Install required operators
+## Install required operators
 
-For our demonstration require the following operators:
+This demonstration requires the following operators:
 
 * [CloudNativePG](https://cloudnative-pg.io/)
 * [Keycloak](https://www.keycloak.org/guides#operator)
@@ -57,19 +57,31 @@ All of them can be installed with the following list of commands:
 kubectl apply --server-side -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.27/releases/cnpg-1.27.1.yaml
 kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.4.2/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
 kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.4.2/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
-kubectl -n default apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.4.2/kubernetes/kubernetes.yml
+kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.4.2/kubernetes/kubernetes.yml
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
 ```
-No is required to wait for a few minutes to have everything ready and working
 
-### Deploying the required objects
+Note: the `-n default` parameter is omitted in each of the above commands, as it is the default namespace of
+the KinD cluster.
 
-We have now to deploy all the required objects to have a Keycloak service working properly
+Note: it is required to wait for a few minutes to make sure everything up and running. You can check and monitor
+these resources with the following command:
 
-#### Deploying the database for Keycloak
+```bash
+kubectl get pods -Aw
+```
 
-Using CloudNativePG we can deploy the require PostgreSQL database to be used by Keycloak
-with the following file:
+## Deploying the required objects
+
+Deploy all the required objects to set up a working Keycloak service.
+
+### Deploying the database for Keycloak
+
+Using CloudNativePG deploy the required PostgreSQL database to be used by Keycloak with the following file:
+
+```bash
+kubectl apply -f ./demo/keycloak-db.yaml
+```
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
@@ -86,15 +98,19 @@ spec:
     size: 1Gi
 ```
 
-The name of our database is `keycloak` and the name of the cluster `keycloak-db`, this will
-be useful in the future.
+The name of our database is `keycloak`, and the name of the cluster `keycloak-db`. This information will
+be useful in future steps.
 
-#### Generating the certificates
+### Deploy the certificate issuer
 
-The keycloak server will require to have certificates to serve the content overt HTTPS, which will
-be required on the PostgreSQL side.
+The keycloak server will require certificates to serve the content over HTTPS, which will
+be used by PostgreSQL.
 
-We create the issuer first:
+First create the issuer:
+
+```bash
+kubectl apply -f ./demo/certificates-issuer.yaml
+```
 
 ```yaml
 apiVersion: cert-manager.io/v1
@@ -105,9 +121,17 @@ spec:
   selfSigned: {}
 ```
 
-Then we generate the certificate with the proper `dnsNames`, important to have `keycloak-app-service`
-which is the default service and also `keycloak-app` that we create to have a simplified version of
-the domain and for future testing.
+### Generate the certificates
+
+Then generate the certificate with the following `dnsNames`:
+
+* `keycloak-app-service` - which is the default service
+* `keycloak-app-service.svc.cluster.local` - default service with FQDN
+* `keycloak-app` - a simplified version of the domain for future testing
+
+```bash
+kubectl apply -f ./demo/keycloak-certificates.yaml
+```
 
 ```yaml
 apiVersion: cert-manager.io/v1
@@ -137,9 +161,17 @@ spec:
   secretName: keycloak-certificate
 ```
 
-#### Starting up the Keycloak server
+## Deploy the Keycloak server
 
-Once we have the require database and certificates, we can now set up the Keycloak instance:
+Once you have the required database and certificates, you can set up the Keycloak instance.
+
+### Starting up the Keycloak server
+
+Deploy the Keycloak app:
+
+```bash
+kubectl apply -f ./demo/keycloak-server.yaml
+```
 
 ```yaml
 apiVersion: k8s.keycloak.org/v2alpha1
@@ -170,15 +202,21 @@ spec:
     headers: xforwarded # double check your reverse proxy sets and overwrites the X-Forwarded-* headers
 ```
 
-Some important points here are:
+Some important points:
 
-* The `tlsSecret` points to the secret with the certificates generate by cert-manager
-* `db` section use the default secrets generated by CloudNativePG to allow Keycloak instance to access
+* the `tlsSecret` points to the secret with the certificates generated by cert-manager
+* the `db` section uses the default secrets generated by CloudNativePG to allow Keycloak instance to access
    the database service
-* To have a more flexible environment the `hostname.strict` is set to `false`, so we don't have to force
-  only one specific domain for everything
+* to have a more flexible environment the `hostname.strict` is set to `false`, to not enforce only one specific
+  domain for everything
 
-We create our generic service to access from everywhere with a simplified name:
+### Create the service
+
+Create a generic service to access from everywhere with a simplified name:
+
+```bash
+kubectl apply -f ./demo/keycloak-service.yaml
+```
 
 ```yaml
 apiVersion: v1
@@ -202,69 +240,78 @@ spec:
   type: ClusterIP
 ```
 
-This will not be used the right away but later to create more base examples in the future or to access
-the Keycloak instance from everywhere exposed with an Ingress
+Note: this will not be used right away, but later. It serves to create more base examples in the future or to access
+the Keycloak instance from everywhere exposed with an Ingress.
 
-#### Testing the Keycloak service
+### Testing the Keycloak service
 
-By now, the Keycloak should be up, but it's important to check that the pod `keycloak-app-0` is up
-and running.
+Check for the `keycloak-app-0` pod to be up and running:
 
-We can now test the access to the interfaz, in one terminal we port-forward the interface:
+```bash
+kubectl get pod keycloak-app-0
+```
+
+Enable the port forwarding with:
 
 ```bash
 kubectl port-forward services/keycloak-app-service 8443
 ```
 
-And in another terminal we get the temporary admin password, that we will use during the whole demonstration
+And in another terminal get the temporary admin password, that will be used during the whole demonstration:
 
 ```bash
 kubectl get secrets keycloak-app-initial-admin -ojsonpath='{.data.password}' | base64 -d
 ```
 
-Now we can access the Keycloak server in our browser with the following URL:
+Now access the Keycloak server in your browser from the following URL:
 
 ```text
 https://localhost:8443/admin/master/console/
 ```
 
-It is important to notice that you will have to accept that it's a self-signed certificate.
+Note: You will have to accept that it's a self-signed certificate in your browser.
 
-Username: temp-admin
-Password: (the one that w egot in the previous step)
+* Username: temp-admin
+* Password: (the one from the previous step)
 
-Once we confirm that we can properly access the Keycloak instance, we proceed to load the Realm
+Once you verified the Keycloak interface is accessible, you can proceed.
 
-#### Loading the Realm
+### Loading the Realm
 
-For our demonstration we have a fixed realm with the name `demo` and a couple of pre-settings for
-`Clients`, `scopes`, `policies` and `users`
+In this demonstration we choose a fixed realm with the name `demo` and a couple of pre-settings for
+`Clients`, `scopes`, `policies` and `users`.
 
-The [kecloak-realm.yaml](./keycloak-realm.yaml) can be downloaded and applied in the following way:
+The [kecloak-realm.yaml](./demo/keycloak-realm.yaml) can be downloaded and applied in the following way:
 
 ```bash
-kubectl apply -f keycloak-realm.yaml
+kubectl apply -f ./demo/keycloak-realm.yaml
 ```
 
-This will create a `KeycloakRealmImport` that will connect to our Keycloak instance and pre-load
-all the required settings using a Kubernetes Job that later can be deleted.
+This will create a `KeycloakRealmImport` that will connect to our Keycloak instance and load
+all the required settings. This procedure will create a Kubernetes Job that can be deleted once
+completed.
 
-After the job is completed we can proceed, this can be check with the following command:
+Check for the job completion with:
 
 ```bash 
 kubectl get job realm-demo 
 ```
 
-Once the Job is finished, verify that the realm `demo` was created in the interface
+Once the Job is in `Completed` state, verify that the realm `demo` was created from the web interface.
 
+## Deploy PostgreSQL
 
-### Creating our CloudNativePG cluster with OAuth
-
-We can now create the CloudNativePG cluster that will use Keycloak for the authentication and
+Now it's time to create the CloudNativePG cluster that will use Keycloak for the authentication and
 authorization method.
 
-First step is to create our initial SQL `ConfigMap` that will contain some examples to apply
-the require roles and permissions:
+### Create the example data with SQL
+
+First create the initial SQL `ConfigMap` called `pg-init-sql` that contains some examples of the required
+roles and permissions:
+
+```bash
+kubectl apply -f ./demo/init_sql-configmap.yaml
+```
 
 ```yaml
 apiVersion: v1
@@ -335,9 +382,13 @@ data:
       GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO app_readwrite;
 ```
 
-This will generate a `ConfigMap` with the name `pg-init-sql` that will be used later.
+### Creating the CloudNativePG cluster with OAuth
 
-Now we create the CloudNativePG cluster with the required configurations:
+Create the CloudNativePG cluster with the required configurations:
+
+```bash
+kubectl apply -f ./demo/pg_oauth-db.yaml
+```
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
@@ -416,72 +467,80 @@ spec:
     pg_hba:
       - host all all 0.0.0.0/0 oauth issuer="https://keycloak-app-service:8443/realms/demo" scope=db_access validator="kc_validator" delegate_ident_mapping=1
 ```
-Some explanations to the file are required while the cluster is being created:
 
-* `env`: This section contains a couple of required environment variables, the important ones are `PGAUTHDEBUG`
-  that will allow us to use the next variable `PGAUTHCAFILE`, this will accept the self-signed certificate that
-  we generated using the cert-manager
-* `projectedVolumeTemplate`: Mount the generated certificate inside the container to be used by PostgreSQL instance
-* `boostrap`: We require to have a `postInitApplicationSQLRefs` so we trigger the SQL after the database is created
-* `postgresql.extensions`: This will mount the specified image inside the container and will make the `kc_validator`
-  available to be loaded inside PostgreSQL
-* `parameters`: The full section is related to the OAuth validation, first we load the `kc_validator` and then we
-  configure it using the GUCs prefixed with `kc.`
-* `pg_hba`: PostgreSQL will have to match the client OAuth requests, we set here how these request are going to be handled
+Where:
 
-### Testing our authentication
+* `env`: contains the required environment variables
+  * `PGAUTHDEBUG`: allows you to use the next variable
+  * `PGAUTHCAFILE`: accepts the self-signed certificate generated using the cert-manager
+  * `SSL_CERT_DIR`: is the directory path containing the certificates
+  * `CURL_CA_BUNDLE`: is the path to the actual CA bundle
+* `projectedVolumeTemplate`: mounts the generated certificate inside the container as a projected volume
+* `boostrap`: is required to execute the initial SQL commands
+  * `postInitApplicationSQLRefs`: specifies the reference to retrieve the actual SQL configmap created in
+    the previous step
+* `postgresql.extensions`: mounts the specified image inside the container and to make the `kc_validator`
+  extension available to be loaded inside PostgreSQL
+* `parameters`: contains the full section of the PostgreSQL GUC related to the OAuth validation.
+  * `oauth_validator_libraries`: loads the `kc_validator` to configure it using the GUCs prefixed with `kc.`
+* `pg_hba`: contains the HBA entry to match the client OAuth requests and how these request are handled
 
-Now we can test the connection to our PostgreSQL instance using Keycloak for the OAuth part.
+## Testing authentication
 
-For simplicity we create a pod inside the same namespace so we can always access everything from the same network:
+Let's test the connection to our PostgreSQL instance using Keycloak for the OAuth part.
+
+### Create a POD to access PostgreSQL from
+
+For simplicity, create a pod inside the same namespace to access everything from the same network:
 
 ```bash
 kubectl run debian --image=debian:unstable -- sleep 100000
 ```
 
-It is important to use `unstable` since this will contain the PostgreSQL version 18, which is the one that implements
-the OAuth feature.
+Note: it is important to use the `unstable` release since it contains the PostgreSQL version 18. The previous versions
+do not support the OAuth feature.
 
-Now we get into the pod:
+Get into the pod:
 
 ```bash
 kubectl exec -ti debian -- bash
 ```
 
-And we trigger the following command:
+Trigger the following command:
 
-```bash
+```text
 apt update && apt dist-upgrade -y && apt install -y postgresql-client libpq-oauth
 ```
 
-The commands will install `psql` and the required lib to support libpq-oauth
+These commands will install `psql` and the required libraries to support libpq-oauth.
 
-In another terminal we now need to get the CA for the certificates we generated for Keycloak, otherwise, we will not
-be able to verify the certificates
+From another terminal, get the CA for the certificates previously generated for Keycloak, otherwise, you will not
+be able to verify the certificates:
 
 ```bash
 kubectl get secrets keycloak-certificate -ojsonpath='{.data.ca\.crt}' | base64 -d
 ```
 
-We need now to place the content in a file inside the `debian` pod, for that we can just use `/root/ca.crt`
+Place the content in a file inside the `debian` pod:
 
-```bash 
+```text 
 echo "<content....>" > /root/ca.crt
 ```
 
-Let's trigger our first login:
+### Testing connection
 
-```bash
+Try the first login:
+
+```text
 PGOAUTHDEBUG=UNSAFE PGOAUTHCAFILE=/root/ca.crt psql "host=pg-oauth-rw user=app_readonly dbname=appdb oauth_issuer=https://keycloak-app-service:8443/realms/demo oauth_client_id=appA oauth_client_secret=XyIXBUgsLhgvJJO4EQrcp8iJvHqaJIjm oauth_scope='db_access'"
 ```
 
-This will offer a URL that needs to be open in your browser, for this the `port-forward` that expose Keycloak needs
-to be running.
+This will offer a URL that needs to be open in your browser, but **first you need to replace** the shown domain
+with `localhost`. This requires the `port-forward` command to still be running to expose the Keycloak service.
 
-The requested data needs to be set.
+Enter the requested data:
 
-Username: peggie
-Password: 123123
+* Username: peggie
+* Password: 123123
 
-After the authorization has been done, your `psql` command should be already logged in.
-
+Once the authorization is done, your `psql` command should be already logged in.
