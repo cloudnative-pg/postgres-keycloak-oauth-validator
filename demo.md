@@ -17,13 +17,15 @@ You will find the same YAML files inside the `demo/` directory for inspection an
 ## Set up the local kubernetes cluster
 
 The demonstration can only be performed on Kubernetes 1.33.x or above, this due
-to the ImageVolume feature that is required to mount the extension/module images
-inside the pods.
+to the `ImageVolume` feature that is required to mount the extension/module images
+inside the pods. Image volumes are enabled by default starting with Kubernetes 1.35.
 
-### KinD configuration
+### KinD configuration (for Kubernetes 1.33 and 1.34)
 
-The [kind-config.yaml](./demo/kind-config.yaml) file serves as the configuration to set up the local Kubernetes
-cluster with the required feature to run this demo.
+If you are using Kubernetes 1.33 or 1.34 with Kind, you need the
+[kind-config.yaml](./demo/kind-config.yaml) file, which serves as the
+configuration to set up the local Kubernetes cluster with the required feature
+to run this demo.
 
 ```yaml
 kind: Cluster
@@ -40,8 +42,15 @@ featureGates:
 Create the cluster with the following command:
 
 ```bash
+kind  create cluster --name pg-imagevolume
+```
+
+For Kubernetes 1.33 or 1.34:
+
+```bash
 kind  create cluster --name pg-imagevolume --config=./demo/kind-config.yaml
 ```
+
 
 ## Install required operators
 
@@ -54,15 +63,21 @@ This demonstration requires the following operators:
 All of them can be installed with the following list of commands:
 
 ```bash
-kubectl apply --server-side -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.27/releases/cnpg-1.27.1.yaml
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.4.2/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.4.2/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.4.2/kubernetes/kubernetes.yml
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
+kubectl apply --server-side \
+  -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.28/releases/cnpg-1.28.0.yaml
+kubectl apply \
+  -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+kubectl apply \
+  -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+kubectl apply \
+  -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/kubernetes.yml
+kubectl apply \
+  -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.2/cert-manager.yaml
 ```
 
-Note: the `-n default` parameter is omitted in each of the above commands, as it is the default namespace of
-the KinD cluster.
+> [!NOTE]
+> The `-n default` parameter is omitted in each of the above commands, as it is
+> the default namespace of the KinD cluster.
 
 Note: it is required to wait for a few minutes to make sure everything up and running. You can check and monitor
 these resources with the following command:
@@ -167,7 +182,7 @@ Once you have the required database and certificates, you can set up the Keycloa
 
 ### Starting up the Keycloak server
 
-Deploy the Keycloak app:
+Deploy the Keycloak server, named `keycloak-app`:
 
 ```bash
 kubectl apply -f ./demo/keycloak-server.yaml
